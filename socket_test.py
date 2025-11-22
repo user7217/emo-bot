@@ -1,52 +1,47 @@
-import socket
-import threading
-import time
+import asyncio
+import websockets
+import json
 
-# ESP32 SoftAP Defaults
-ESP_IP = "192.168.4.1"
-PORT = 8080
+CLIENTS = set()
 
-def listen_to_esp(sock):
-    """Background thread to print messages coming FROM the ESP32."""
+async def handler(websocket):
+    """Register new connection and keep it open."""
+    print(f"Device connected!")
+    CLIENTS.add(websocket)
     try:
-        while True:
-            data = sock.recv(1024)
-            if not data:
-                break
-            print(f"\n[ESP32]: {data.decode().strip()}")
-            print("Command > ", end="", flush=True) # Re-print prompt
-    except Exception as e:
-        print(f"\nConnection lost: {e}")
-
-def main():
-    print(f"Connecting to ESP32 at {ESP_IP}:{PORT}...")
-    print("Make sure your WiFi is connected to 'ESP32_FaceBot'")
-
-    try:
-        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect((ESP_IP, PORT))
-        print("Connected! Type 'sad', 'tensed', or 'angry'.")
-        
-        # Start listener thread
-        t = threading.Thread(target=listen_to_esp, args=(client,), daemon=True)
-        t.start()
-
-        while True:
-            msg = input("Command > ").lower().strip()
-            if msg == "quit":
-                break
-            if msg:
-                # Send command with newline
-                try:
-                    client.sendall((msg + "\n").encode())
-                except OSError:
-                    print("Socket error, attempting reconnect...")
-                    break
-                    
-    except Exception as e:
-        print(f"Could not connect: {e}")
+        await websocket.wait_closed()
     finally:
-        client.close()
+        CLIENTS.remove(websocket)
+        print("Device disconnected.")
+
+async def input_loop():
+    """Read keyboard input and send to ESP32."""
+    print("Server Ready. Type message or /angry, /tensed, /sad")
+    while True:
+        text = await asyncio.to_thread(input)
+        
+        if not CLIENTS:
+            print("No device connected.")
+            continue
+
+        # Determine if command or text
+        if text.startswith("/"):
+            data = {"emotion": text.replace("/", "")}
+        else:
+            data = {"text": text, "emotion": "angry"}
+            
+        # Broadcast to ESP32
+        payload = json.dumps(data)
+        for ws in CLIENTS:
+            await ws.send(payload)
+
+async def main():
+    # 0.0.0.0 listens on ALL IP addresses your computer has
+    async with websockets.serve(handler, "0.0.0.0", 8765):
+        await input_loop()
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nStopped.")
