@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>3D Rubik's Cube</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #222; font-family: sans-serif; }
+        #info {
+            position: absolute; top: 10px; left: 10px; color: white;
+            background: rgba(0,0,0,0.7); padding: 15px; border-radius: 8px;
+            pointer-events: none; user-select: none;
+        }
+        kbd {
+            background: #444; padding: 2px 6px; border-radius: 4px; border: 1px solid #666; font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="info">
+        <h3>Rubik's Cube Sim</h3>
+        <p><strong>Mouse:</strong> Drag to rotate view</p>
+        <p><strong>Keyboard Controls (Faces):</strong></p>
+        <p><kbd>F</kbd> Front &nbsp; <kbd>B</kbd> Back</p>
+        <p><kbd>U</kbd> Up &nbsp;&nbsp;&nbsp;&nbsp; <kbd>D</kbd> Down</p>
+        <p><kbd>L</kbd> Left &nbsp;&nbsp; <kbd>R</kbd> Right</p>
+        <p><small>Hold <kbd>Shift</kbd> to reverse direction</small></p>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- 1. Setup Scene ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x222222);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(6, 5, 8);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enablePan = false;
+        controls.enableDamping = true;
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
+
+        // --- 2. Cube Construction ---
+        const cubes = []; // Store the 27 little cubes
+        const cubeGroup = new THREE.Group();
+        scene.add(cubeGroup);
+
+        // Colors: Right(x+), Left(x-), Top(y+), Bottom(y-), Front(z+), Back(z-)
+        const colors = [0xff0000, 0xff8800, 0xffffff, 0xffff00, 0x00ff00, 0x0000ff]; 
+        
+        const geometry = new THREE.BoxGeometry(0.95, 0.95, 0.95);
+
+        function createMaterial(x, y, z) {
+            // Map position to color. If face is external, color it; otherwise black.
+            const mats = [];
+            mats.push(new THREE.MeshStandardMaterial({ color: x === 1 ? colors[0] : 0x222222 })); // Right
+            mats.push(new THREE.MeshStandardMaterial({ color: x === -1 ? colors[1] : 0x222222 })); // Left
+            mats.push(new THREE.MeshStandardMaterial({ color: y === 1 ? colors[2] : 0x222222 })); // Top
+            mats.push(new THREE.MeshStandardMaterial({ color: y === -1 ? colors[3] : 0x222222 })); // Bottom
+            mats.push(new THREE.MeshStandardMaterial({ color: z === 1 ? colors[4] : 0x222222 })); // Front
+            mats.push(new THREE.MeshStandardMaterial({ color: z === -1 ? colors[5] : 0x222222 })); // Back
+            return mats;
+        }
+
+        // Generate 3x3x3 grid
+        for(let x=-1; x<=1; x++) {
+            for(let y=-1; y<=1; y++) {
+                for(let z=-1; z<=1; z++) {
+                    const material = createMaterial(x, y, z);
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.position.set(x, y, z);
+                    // Store internal coordinates for logic
+                    mesh.userData = { initialPos: new THREE.Vector3(x,y,z) }; 
+                    cubeGroup.add(mesh);
+                    cubes.push(mesh);
+                }
+            }
+        }
+
+        // --- 3. Animation / Logic ---
+        let isAnimating = false;
+        const rotateSpeed = 0.15; // Radians per frame
+        
+        // Helper to rotate a specific slice
+        // Axis: 'x', 'y', 'z' | Index: -1, 0, 1 | Direction: 1 or -1
+        function rotateLayer(axis, index, dir) {
+            if (isAnimating) return;
+            isAnimating = true;
+
+            // 1. Identify cubes in the layer based on World Position (with small tolerance)
+            const activeCubes = cubes.filter(c => Math.abs(c.position[axis] - index) < 0.1);
+
+            // 2. Create a temporary pivot object
+            const pivot = new THREE.Object3D();
+            pivot.rotation.set(0,0,0);
+            cubeGroup.add(pivot);
+
+            // 3. Attach cubes to pivot
+            activeCubes.forEach(c => {
+                cubeGroup.remove(c);
+                pivot.add(c);
+            });
+
+            // 4. Animate
+            const targetRotation = (Math.PI / 2) * dir;
+            let currentRotation = 0;
+
+            function animateRotation() {
+                const step = (Math.PI / 2) * 0.1; // Animation speed
+                
+                if (Math.abs(currentRotation) < Math.abs(targetRotation)) {
+                    pivot.rotation[axis] += step * dir;
+                    currentRotation += step * dir;
+                    requestAnimationFrame(animateRotation);
+                } else {
+                    // SNAP to exact angle
+                    pivot.rotation[axis] = targetRotation;
+                    finalizeRotation(pivot, activeCubes);
+                }
+            }
+            animateRotation();
+        }
+
+        function finalizeRotation(pivot, activeCubes) {
+            pivot.updateMatrixWorld();
+            
+            // Detach from pivot, reattach to world with new transforms
+            activeCubes.forEach(c => {
+                c.updateMatrixWorld();
+                cubeGroup.attach(c); // Three.js helper to re-parent without moving visual
+                
+                // Round positions to integers to prevent floating point drift
+                c.position.x = Math.round(c.position.x);
+                c.position.y = Math.round(c.position.y);
+                c.position.z = Math.round(c.position.z);
+            });
+
+            cubeGroup.remove(pivot);
+            isAnimating = false;
+        }
+
+        // --- 4. Input Handling ---
+        window.addEventListener('keydown', (e) => {
+            const dir = e.shiftKey ? 1 : -1; // Standard vs Prime direction
+            const key = e.key.toLowerCase();
+
+            switch(key) {
+                case 'l': rotateLayer('x', -1, dir); break; // Left
+                case 'r': rotateLayer('x', 1, -dir); break; // Right (Inverse of Left logic)
+                case 'u': rotateLayer('y', 1, dir); break;  // Up
+                case 'd': rotateLayer('y', -1, -dir); break; // Down
+                case 'f': rotateLayer('z', 1, dir); break;  // Front
+                case 'b': rotateLayer('z', -1, -dir); break; // Back
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- 5. Render Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+    </script>
+</body>
+</html>
