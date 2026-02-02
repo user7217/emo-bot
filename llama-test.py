@@ -64,9 +64,10 @@ class AsyncAudioPlayer:
 class TTSWorker:
     def __init__(self):
         try:
-            cwd = os.getcwd()
-            model_path = os.path.join(cwd, "kokoro-v1.0.onnx")
-            voices_path = os.path.join(cwd, "voices-v1.0.bin")
+            # Fix: Use script directory instead of CWD for robustness
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            model_path = os.path.join(script_dir, "kokoro-v1.0.onnx")
+            voices_path = os.path.join(script_dir, "voices-v1.0.bin")
             self.kokoro = Kokoro(model_path, voices_path)
             
             v1 = self.kokoro.voices["af_bella"]
@@ -137,12 +138,14 @@ class Ear:
                 frames_buffer = []
                 time.sleep(0.05)
                 try: stream.read(512, exception_on_overflow=False)
-                except: pass
+                except Exception: pass
                 continue 
 
             try:
                 data = stream.read(512, exception_on_overflow=False)
-            except: continue
+            except Exception as e:
+                # print(f"[!] Audio Read Error: {e}") # Optional: debug log
+                continue
 
             audio_int16 = np.frombuffer(data, dtype=np.int16)
             audio_float32 = audio_int16.flatten().astype(np.float32) / 32768.0
@@ -157,12 +160,24 @@ class Ear:
                     # Dump pre-buffer into recording so we don't cut off the start
                     frames_buffer = list(pre_buffer) 
                     frames_buffer.append(data)
+                    recording_start_time = current_time # Start tracking duration
                 else:
                     frames_buffer.append(data)
                 last_speech_time = current_time
             
             elif is_recording:
                 frames_buffer.append(data)
+                
+                # Check for Max Record Time
+                recording_duration = current_time - recording_start_time
+                if recording_duration > MAX_RECORD_TIME:
+                    is_recording = False
+                    print(f"[!] Max record time reached ({MAX_RECORD_TIME}s). Processing...")
+                    if len(frames_buffer) > 20: 
+                        self._transcribe(b''.join(frames_buffer), p)
+                    frames_buffer = []
+                    continue
+
                 # If silence exceeds timeout, process audio
                 if (current_time - last_speech_time > SILENCE_TIMEOUT):
                     is_recording = False
@@ -312,7 +327,7 @@ class VisionSystem:
                         res = DeepFace.analyze(face_roi, actions=['emotion'], enforce_detection=False, detector_backend='skip', silent=True)
                         with self.lock: self.current_emotion = res[0]['dominant_emotion']
                         last_emo_t = time.time()
-                    except: pass
+                    except Exception: pass # DeepFace errors are common/ignorable
             if time.time() - last_desc_t > 10:
                 threading.Thread(target=self._run_blip, args=(rgb.copy(),)).start()
                 last_desc_t = time.time()
@@ -326,7 +341,8 @@ class VisionSystem:
             out = self.model.generate(**inputs, max_new_tokens=20)
             d = self.processor.decode(out[0], skip_special_tokens=True)
             with self.lock: self.current_desc = d
-        except: pass
+        except Exception as e:
+            print(f"[!] Vision Caption Error: {e}")
 
 # --- MAIN ---
 if __name__ == "__main__":
